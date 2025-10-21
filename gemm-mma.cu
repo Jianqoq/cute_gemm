@@ -36,28 +36,28 @@ __global__ void gemm_mma(T *Cptr, const T *Aptr, const T *Bptr, int m, int n, in
     Tensor tCrC = thr_mma.partition_fragment_C(gC);
     Tensor tCgC = thr_mma.partition_C(gC);
     clear(tCrC);
-    for (int k_tile = 0; k_tile < size<2>(gA); ++k_tile)
-    {
-        Tensor kgA = gA(_, _, k_tile);
-        Tensor kgB = gB(_, _, k_tile);
-        Tensor tAgA = thr_mma.partition_A(kgA);
-        Tensor tBgB = thr_mma.partition_B(kgB); // 每个线程的 B 部分
+    // for (int k_tile = 0; k_tile < size<2>(gA); ++k_tile)
+    // {
+    //     Tensor kgA = gA(_, _, k_tile);
+    //     Tensor kgB = gB(_, _, k_tile);
+    //     Tensor tAgA = thr_mma.partition_A(kgA);
+    //     Tensor tBgB = thr_mma.partition_B(kgB); // 每个线程的 B 部分
 
-        Tensor tAsA = local_partition(sA, tA, threadIdx.x);
-        Tensor tBsB = local_partition(sB, tB, threadIdx.x);
-        copy(tAgA, tAsA);
-        copy(tBgB, tBsB);
+    //     Tensor tAsA = local_partition(sA, tA, threadIdx.x);
+    //     Tensor tBsB = local_partition(sB, tB, threadIdx.x);
+    //     copy(tAgA, tAsA);
+    //     copy(tBgB, tBsB);
 
-        cp_async_fence();
-        cp_async_wait<0>();
-        __syncthreads();
+    //     cp_async_fence();
+    //     cp_async_wait<0>();
+    //     __syncthreads();
 
-        auto tCsA = local_partition(sA, tC, threadIdx.x, Step<_1, X>{});
-        auto tCsB = local_partition(sB, tC, threadIdx.x, Step<X, _1>{});
-        gemm(tCsA, tCsB, tCrC);
+    //     auto tCsA = local_partition(sA, tC, threadIdx.x, Step<_1, X>{});
+    //     auto tCsB = local_partition(sB, tC, threadIdx.x, Step<X, _1>{});
+    //     gemm(tCsA, tCsB, tCrC);
 
-        __syncthreads();
-    }
+    //     __syncthreads();
+    // }
     //   copy(tCrC, tCgC);
 }
 
@@ -165,7 +165,8 @@ int main()
 
     // each thread block handle with (kTileM, kTileN) output
     dim3 grid(n / kTileN, m / kTileM);
-    dim3 block(256);
+    constexpr int block_size = 256;
+    dim3 block(block_size);
 
     using SLayoutA = decltype(make_layout(make_shape(Int<kTileM>{}, Int<kTileK>{})));
     using SLayoutB = decltype(make_layout(make_shape(Int<kTileN>{}, Int<kTileK>{})));
@@ -174,10 +175,11 @@ int main()
     using copy_atom_a = Copy_Atom<UniversalCopy<T>, T>;
     using copy_atom_b = Copy_Atom<UniversalCopy<T>, T>;
 
+    constexpr int warpSize = 32;
     constexpr int num_el_per_cache_line = sizeof(uint128_t) / sizeof(T);
     // 256线程拷贝 32x8 的输入
-    auto copy_a = make_tiled_copy(copy_atom_a{}, make_layout(make_shape(warpSize, num_el_per_cache_line)), make_layout(make_shape(block.x + block.y + block.z, 1)));
-    auto copy_b = make_tiled_copy(copy_atom_b{}, make_layout(make_shape(warpSize, num_el_per_cache_line)), make_layout(make_shape(block.x + block.y + block.z, 1)));
+    auto copy_a = make_tiled_copy(copy_atom_a{}, Layout<Shape<Int<warpSize>, Int<num_el_per_cache_line>>>{}, Layout<Shape<Int<block_size / warpSize>, Int<1>>>{});
+    auto copy_b = make_tiled_copy(copy_atom_b{}, Layout<Shape<Int<warpSize>, Int<num_el_per_cache_line>>>{}, Layout<Shape<Int<block_size / warpSize>, Int<1>>>{});
     // print_latex(copy_a);
     // print_latex(copy_b);
 
