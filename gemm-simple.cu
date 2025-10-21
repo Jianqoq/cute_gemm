@@ -9,7 +9,7 @@ template <typename T>
 void gen_rand_data(T *data, int n);
 
 template <typename T, int kTileM, int kTileN, int kTileK>
-__global__ void gemm_simple(T *Cptr, const T *Aptr, const T *Bptr, int m, int n, int k)
+__global__ void gemm_mma(T *Cptr, const T *Aptr, const T *Bptr, int m, int n, int k)
 {
   using SLayoutA = decltype(make_layout(make_shape(Int<kTileM>{}, Int<kTileK>{})));
   using SLayoutB = decltype(make_layout(make_shape(Int<kTileN>{}, Int<kTileK>{})));
@@ -173,7 +173,7 @@ int main()
   cudaEventRecord(start);
   for (int i = 0; i < count; ++i)
   {
-    gemm_simple<T, kTileM, kTileN, kTileK><<<grid, block>>>(Cptr, Aptr, Bptr, m, n, k);
+    gemm_mma<T, kTileM, kTileN, kTileK><<<grid, block>>>(Cptr, Aptr, Bptr, m, n, k);
   }
   auto err = cudaGetLastError();
   printf("err = %d, str = %s\n", err, cudaGetErrorString(err));
