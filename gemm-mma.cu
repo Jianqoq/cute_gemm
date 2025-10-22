@@ -33,32 +33,37 @@ __global__ void gemm_mma(T *Cptr, const T *Aptr, const T *Bptr, int m, int n, in
     Tensor sB = make_tensor(make_smem_ptr(smemB), SLayoutB{});
 
     auto thr_mma = mma.get_slice(threadIdx.x);
-    Tensor tCrC = thr_mma.partition_fragment_C(gC);
     Tensor tCgC = thr_mma.partition_C(gC);
+    Tensor tCrC = thr_mma.make_fragment_C(tCgC);
+    Tensor tCsA = thr_mma.partition_A(sA); // (MMA,MMA_M,MMA_K)
+    Tensor tCsB = thr_mma.partition_B(sB); // (MMA,MMA_N,MMA_K)
+    if (thread0()) {
+        print("tCsA: ");print(shape(tCsA));print("\n");
+        print("tCsB: ");print(shape(tCsB));print("\n");
+    }
+    CUTE_STATIC_ASSERT_V(  shape(tCrC) ==   shape(tCgC));                // (MMA,MMA_M,MMA_N)
+    CUTE_STATIC_ASSERT_V(size<1>(tCgC) == size<1>(tCsA));                // MMA_M
+    CUTE_STATIC_ASSERT_V(size<2>(tCgC) == size<1>(tCsB));                // MMA_N
+    CUTE_STATIC_ASSERT_V(size<2>(tCsA) == size<2>(tCsB));                // MMA_K
     clear(tCrC);
-    // for (int k_tile = 0; k_tile < size<2>(gA); ++k_tile)
-    // {
-    //     Tensor kgA = gA(_, _, k_tile);
-    //     Tensor kgB = gB(_, _, k_tile);
-    //     Tensor tAgA = thr_mma.partition_A(kgA);
-    //     Tensor tBgB = thr_mma.partition_B(kgB); // 每个线程的 B 部分
 
-    //     Tensor tAsA = local_partition(sA, tA, threadIdx.x);
-    //     Tensor tBsB = local_partition(sB, tB, threadIdx.x);
-    //     copy(tAgA, tAsA);
-    //     copy(tBgB, tBsB);
+    auto thr_copy_a = copy_a.get_slice(threadIdx.x);
+    auto thr_copy_b = copy_b.get_slice(threadIdx.x);
 
-    //     cp_async_fence();
-    //     cp_async_wait<0>();
-    //     __syncthreads();
+    Tensor tAgA = thr_copy_a.partition_S(gA); // (ACPY,ACPY_M,ACPY_K,k)
+    Tensor tBgB = thr_copy_b.partition_S(gB); // (BCPY,BCPY_N,BCPY_K,k)
+    Tensor tAsA = thr_copy_a.partition_D(sA); // (ACPY,ACPY_M,ACPY_K)
+    Tensor tBsB = thr_copy_b.partition_D(sB); // (BCPY,BCPY_N,BCPY_K)
+    for (int k_tile = 0; k_tile < size<2>(gA); ++k_tile)
+    {
+        copy(copy_a, tAgA(_, _, _, k_tile), tAsA); // (ACPY,ACPY_M,ACPY_K) -> (ACPY,ACPY_M,ACPY_K)
+        copy(copy_b, tBgB(_, _, _, k_tile), tBsB);
+        __syncthreads();
 
-    //     auto tCsA = local_partition(sA, tC, threadIdx.x, Step<_1, X>{});
-    //     auto tCsB = local_partition(sB, tC, threadIdx.x, Step<X, _1>{});
-    //     gemm(tCsA, tCsB, tCrC);
-
-    //     __syncthreads();
-    // }
-    //   copy(tCrC, tCgC);
+        gemm(mma, tCsA, tCsB, tCrC);
+        __syncthreads();
+    }
+    copy(tCrC, tCgC);
 }
 
 template <typename T>
