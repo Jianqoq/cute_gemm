@@ -8,6 +8,9 @@ using namespace cute;
 template <typename T>
 void gen_rand_data(T *data, int n);
 
+template <int a, int b>
+constexpr auto div_ceil = (Int<a>{} + Int<b>{} - Int<1>{}) / Int<b>{};
+
 template <typename T, int kTileM, int kTileN, int kTileK, class TiledCopyA, class TiledCopyB, class TiledMMA, class SLayoutA, class SLayoutB>
 __global__ void gemm_mma(T *Cptr, const T *Aptr, const T *Bptr, int m, int n, int k,
                          TiledCopyA copy_a, TiledCopyB copy_b, TiledMMA mma)
@@ -20,10 +23,10 @@ __global__ void gemm_mma(T *Cptr, const T *Aptr, const T *Bptr, int m, int n, in
     int iy = blockIdx.y;
 
     //  gA(kTileM, kTileK, num_tile_k)
-    //  gB(kTileN, kTileK, num_tile_k)
-    //  gC(kTileM, kTileN)
     Tensor gA = local_tile(A, make_tile(Int<kTileM>{}, Int<kTileK>{}), make_coord(iy, _));
+    //  gB(kTileN, kTileK, num_tile_k)
     Tensor gB = local_tile(B, make_tile(Int<kTileN>{}, Int<kTileK>{}), make_coord(ix, _));
+    //  gC(kTileM, kTileN)
     Tensor gC = local_tile(C, make_tile(Int<kTileM>{}, Int<kTileN>{}), make_coord(iy, ix));
 
     __shared__ T smemA[cosize_v<SLayoutA>];
@@ -35,25 +38,17 @@ __global__ void gemm_mma(T *Cptr, const T *Aptr, const T *Bptr, int m, int n, in
     auto thr_mma = mma.get_slice(threadIdx.x);
     Tensor tCgC = thr_mma.partition_C(gC);
     Tensor tCrC = thr_mma.make_fragment_C(tCgC);
-    Tensor tCsA = thr_mma.partition_A(sA); // (MMA,MMA_M,MMA_K)
-    Tensor tCsB = thr_mma.partition_B(sB); // (MMA,MMA_N,MMA_K)
-    if (thread0()) {
-        print("tCsA: ");print(shape(tCsA));print("\n");
-        print("tCsB: ");print(shape(tCsB));print("\n");
-    }
-    CUTE_STATIC_ASSERT_V(  shape(tCrC) ==   shape(tCgC));                // (MMA,MMA_M,MMA_N)
-    CUTE_STATIC_ASSERT_V(size<1>(tCgC) == size<1>(tCsA));                // MMA_M
-    CUTE_STATIC_ASSERT_V(size<2>(tCgC) == size<1>(tCsB));                // MMA_N
-    CUTE_STATIC_ASSERT_V(size<2>(tCsA) == size<2>(tCsB));                // MMA_K
+    Tensor tCsA = thr_mma.partition_A(sA); // (MMA,num_MMA_m,num_MMA_k)
+    Tensor tCsB = thr_mma.partition_B(sB); // (MMA,num_MMA_n,num_MMA_k)
     clear(tCrC);
 
     auto thr_copy_a = copy_a.get_slice(threadIdx.x);
     auto thr_copy_b = copy_b.get_slice(threadIdx.x);
 
-    Tensor tAgA = thr_copy_a.partition_S(gA); // (ACPY,ACPY_M,ACPY_K,k)
-    Tensor tBgB = thr_copy_b.partition_S(gB); // (BCPY,BCPY_N,BCPY_K,k)
-    Tensor tAsA = thr_copy_a.partition_D(sA); // (ACPY,ACPY_M,ACPY_K)
-    Tensor tBsB = thr_copy_b.partition_D(sB); // (BCPY,BCPY_N,BCPY_K)
+    Tensor tAgA = thr_copy_a.partition_S(gA); // (num_el_per_cpy, num_copy_m, num_copy_k, k)
+    Tensor tBgB = thr_copy_b.partition_S(gB); // (num_el_per_cpy, num_copy_m, num_copy_k, k)
+    Tensor tAsA = thr_copy_a.partition_D(sA); // (num_el_per_cpy, num_copy_m, num_copy_k)
+    Tensor tBsB = thr_copy_b.partition_D(sB); // (num_el_per_cpy, num_copy_m, num_copy_k)
     for (int k_tile = 0; k_tile < size<2>(gA); ++k_tile)
     {
         copy(copy_a, tAgA(_, _, _, k_tile), tAsA); // (ACPY,ACPY_M,ACPY_K) -> (ACPY,ACPY_M,ACPY_K)
@@ -164,7 +159,7 @@ int main()
     cudaMemcpy(Aptr, Aptr_host, sizeof(T) * m * k, cudaMemcpyHostToDevice);
     cudaMemcpy(Bptr, Bptr_host, sizeof(T) * n * k, cudaMemcpyHostToDevice);
 
-    constexpr int kTileM = 128;
+    constexpr int kTileM = 256;
     constexpr int kTileN = 128;
     constexpr int kTileK = 32;
 
@@ -183,13 +178,12 @@ int main()
     constexpr int warpSize = 32;
     constexpr int num_el_per_cache_line = sizeof(uint128_t) / sizeof(T);
     // 256线程拷贝 32x8 的输入
-    auto copy_a = make_tiled_copy(copy_atom_a{}, Layout<Shape<Int<warpSize>, Int<num_el_per_cache_line>>>{}, Layout<Shape<Int<block_size / warpSize>, Int<1>>>{});
-    auto copy_b = make_tiled_copy(copy_atom_b{}, Layout<Shape<Int<warpSize>, Int<num_el_per_cache_line>>>{}, Layout<Shape<Int<block_size / warpSize>, Int<1>>>{});
+    auto copy_a = make_tiled_copy(copy_atom_a{}, Layout<Shape<Int<warpSize>, Int<num_el_per_cache_line>>>{}, Layout<Shape<Int<block_size / warpSize>, Int<1>>>{}); // copy = (32 * 8, 8)
+    auto copy_b = make_tiled_copy(copy_atom_b{}, Layout<Shape<Int<warpSize>, Int<num_el_per_cache_line>>>{}, Layout<Shape<Int<block_size / warpSize>, Int<1>>>{}); // copy = (32 * 8, 8)
     // print_latex(copy_a);
     // print_latex(copy_b);
 
     using mma_atom = UniversalFMA<T, T, T>;
-    using copy_atom = Copy_Atom<UniversalCopy<T>, T>;
 
     // 256线程计算 16x16 的输出
     auto mma = make_tiled_mma(mma_atom{}, Layout<Shape<_16, _16, _1>>{});
