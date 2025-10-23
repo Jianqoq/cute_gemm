@@ -159,7 +159,7 @@ int main()
     cudaMemcpy(Aptr, Aptr_host, sizeof(T) * m * k, cudaMemcpyHostToDevice);
     cudaMemcpy(Bptr, Bptr_host, sizeof(T) * n * k, cudaMemcpyHostToDevice);
 
-    constexpr int kTileM = 256;
+    constexpr int kTileM = 128;
     constexpr int kTileN = 128;
     constexpr int kTileK = 32;
 
