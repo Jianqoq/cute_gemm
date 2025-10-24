@@ -17,7 +17,7 @@ __global__ void gemm_mma(T *Cptr, const T *Aptr, const T *Bptr, int m, int n, in
 {
     Tensor A = make_tensor(make_gmem_ptr(Aptr), make_shape(m, k), make_stride(k, Int<1>{}));
     Tensor B = make_tensor(make_gmem_ptr(Bptr), make_shape(n, k), make_stride(k, Int<1>{}));
-    Tensor C = make_tensor(make_gmem_ptr(Cptr), make_shape(m, n), make_stride(n, Int<1>{}));
+    Tensor C = make_tensor(make_gmem_ptr(Cptr), make_shape(m, n), make_stride(Int<1>{}, n));
 
     int ix = blockIdx.x;
     int iy = blockIdx.y;
@@ -49,6 +49,11 @@ __global__ void gemm_mma(T *Cptr, const T *Aptr, const T *Bptr, int m, int n, in
     Tensor tBgB = thr_copy_b.partition_S(gB); // (num_el_per_cpy, num_copy_m, num_copy_k, k)
     Tensor tAsA = thr_copy_a.partition_D(sA); // (num_el_per_cpy, num_copy_m, num_copy_k)
     Tensor tBsB = thr_copy_b.partition_D(sB); // (num_el_per_cpy, num_copy_m, num_copy_k)
+
+    if (thread0() && blockIdx.x == 0 && blockIdx.y == 0) {
+        print("tAgA = ");print(shape(tAgA));print("\n");
+        print("tAsA = ");print(shape(tAsA));print("\n");
+    }
     for (int k_tile = 0; k_tile < size<2>(gA); ++k_tile)
     {
         copy(copy_a, tAgA(_, _, _, k_tile), tAsA); // (ACPY,ACPY_M,ACPY_K) -> (ACPY,ACPY_M,ACPY_K)
@@ -74,7 +79,7 @@ void gemm_cpu_reference(const T *A, const T *B, T *C, int M, int N, int K)
                 // A 是 (M, K)，B 是 (N, K) 转置布局
                 sum += float(A[m * K + k]) * float(B[n * K + k]);
             }
-            C[m * N + n] = T(sum);
+            C[m + n * M] = T(sum);
         }
     }
 }
@@ -161,26 +166,22 @@ int main()
 
     constexpr int kTileM = 128;
     constexpr int kTileN = 128;
-    constexpr int kTileK = 32;
+    constexpr int kTileK = 8;
 
     // each thread block handle with (kTileM, kTileN) output
     dim3 grid(n / kTileN, m / kTileM);
     constexpr int block_size = 256;
     dim3 block(block_size);
 
-    using SLayoutA = decltype(make_layout(make_shape(Int<kTileM>{}, Int<kTileK>{})));
-    using SLayoutB = decltype(make_layout(make_shape(Int<kTileN>{}, Int<kTileK>{})));
-    constexpr int k_dimension = size<1>(SLayoutA{}); // 获取第二个维度（K）
+    using SLayoutA = decltype(make_layout(make_shape(Int<kTileM>{}, Int<kTileK>{}), make_stride(Int<1>{}, Int<kTileM>{} + Int<1>{})));
+    using SLayoutB = decltype(make_layout(make_shape(Int<kTileN>{}, Int<kTileK>{}), make_stride(Int<1>{}, Int<kTileN>{} + Int<1>{})));
 
     using copy_atom_a = Copy_Atom<UniversalCopy<T>, T>;
     using copy_atom_b = Copy_Atom<UniversalCopy<T>, T>;
 
-    constexpr int warpSize = 32;
-    constexpr int num_el_per_cache_line = sizeof(uint128_t) / sizeof(T);
     // 256线程拷贝 32x8 的输入
-    auto copy_a = make_tiled_copy(copy_atom_a{}, Layout<Shape<Int<warpSize>, Int<num_el_per_cache_line>>>{}, Layout<Shape<Int<block_size / warpSize>, Int<1>>>{}); // copy = (32 * 8, 8)
-    auto copy_b = make_tiled_copy(copy_atom_b{}, Layout<Shape<Int<warpSize>, Int<num_el_per_cache_line>>>{}, Layout<Shape<Int<block_size / warpSize>, Int<1>>>{}); // copy = (32 * 8, 8)
-    // print_latex(copy_a);
+    auto copy_a = make_tiled_copy(copy_atom_a{}, Layout<Shape<_32, _8>>{}, Layout<Shape< _5,_1>>{}); // copy = (32 * 8, 8)
+    auto copy_b = make_tiled_copy(copy_atom_b{}, Layout<Shape<_32, _8>>{}, Layout<Shape< _5,_1>>{}); // copy = (32 * 8, 8)
     // print_latex(copy_b);
 
     using mma_atom = UniversalFMA<T, T, T>;
@@ -188,7 +189,7 @@ int main()
     // 256线程计算 16x16 的输出
     auto mma = make_tiled_mma(mma_atom{}, Layout<Shape<_16, _16, _1>>{});
 
-    int count = 100;
+    int count = 1;
     cudaEventRecord(start);
     for (int i = 0; i < count; ++i)
     {

@@ -13,19 +13,15 @@ __global__ void gemm_mma(T *Cptr, const T *Aptr, const T *Bptr, int m, int n, in
 {
   using SLayoutA = decltype(make_layout(make_shape(Int<kTileM>{}, Int<kTileK>{})));
   using SLayoutB = decltype(make_layout(make_shape(Int<kTileN>{}, Int<kTileK>{})));
-  Tensor A = make_tensor(make_gmem_ptr(Aptr), make_shape(m, k), make_stride(k, Int<1>{}));
-  Tensor B = make_tensor(make_gmem_ptr(Bptr), make_shape(n, k), make_stride(k, Int<1>{}));
-  Tensor C = make_tensor(make_gmem_ptr(Cptr), make_shape(m, n), make_stride(n, Int<1>{}));
+  Tensor mA = make_tensor(make_gmem_ptr(Aptr), make_shape(m, k), make_stride(k, Int<1>{}));
+  Tensor mB = make_tensor(make_gmem_ptr(Bptr), make_shape(n, k), make_stride(k, Int<1>{}));
+  Tensor mC = make_tensor(make_gmem_ptr(Cptr), make_shape(m, n), make_stride(Int<1>{}, n));
 
-  int ix = blockIdx.x;
-  int iy = blockIdx.y;
-
-  //  gA(kTileM, kTileK, num_tile_k)
-  //  gB(kTileN, kTileK, num_tile_k)
-  //  gC(kTileM, kTileN)
-  Tensor gA = local_tile(A, make_tile(Int<kTileM>{}, Int<kTileK>{}), make_coord(iy, _));
-  Tensor gB = local_tile(B, make_tile(Int<kTileN>{}, Int<kTileK>{}), make_coord(ix, _));
-  Tensor gC = local_tile(C, make_tile(Int<kTileM>{}, Int<kTileN>{}), make_coord(iy, ix));
+  auto cta_tiler = make_shape(Int<kTileM>{}, Int<kTileN>{}, Int<kTileK>{});
+  auto cta_coord = make_coord(blockIdx.x, blockIdx.y, _);
+  Tensor gA = local_tile(mA, cta_tiler, cta_coord, Step<_1, X,_1>{});  // (BLK_M,BLK_K,k)
+  Tensor gB = local_tile(mB, cta_tiler, cta_coord, Step< X,_1,_1>{});  // (BLK_N,BLK_K,k)
+  Tensor gC = local_tile(mC, cta_tiler, cta_coord, Step<_1,_1, X>{});  // (BLK_M,BLK_N)
 
   __shared__ T smemA[cosize_v<SLayoutA>];
   __shared__ T smemB[cosize_v<SLayoutB>];
@@ -36,26 +32,24 @@ __global__ void gemm_mma(T *Cptr, const T *Aptr, const T *Bptr, int m, int n, in
   auto tA = make_layout(make_shape(Int<32>{}, Int<8>{}));  // (m,k) -> thr_idx
   auto tB = make_layout(make_shape(Int<32>{}, Int<8>{}));  // (n,k) -> thr_idx
   auto tC = make_layout(make_shape(Int<16>{}, Int<16>{})); // (m,n) -> thr_idx
+  auto tCsA = local_partition(sA, tC, threadIdx.x, Step<_1, X>{});
+  auto tCsB = local_partition(sB, tC, threadIdx.x, Step<X, _1>{});
+  auto tAgA = local_partition(gA, tA, threadIdx.x); // 每个线程的 A 部分
+  auto tBgB = local_partition(gB, tB, threadIdx.x); // 每个线程的 B 部分
+  auto tAsA = local_partition(sA, tA, threadIdx.x);
+  auto tBsB = local_partition(sB, tB, threadIdx.x);
   Tensor tCgC = local_partition(gC, tC, threadIdx.x, Step<_1, _1>{});
   Tensor tCrC = make_tensor_like(tCgC);
   clear(tCrC);
   for (int k_tile = 0; k_tile < size<2>(gA); ++k_tile)
   {
-    Tensor kgA = gA(_, _, k_tile);
-    Tensor kgB = gB(_, _, k_tile);
-    auto tAgA = local_partition(kgA, tA, threadIdx.x); // 每个线程的 A 部分
-    auto tBgB = local_partition(kgB, tB, threadIdx.x); // 每个线程的 B 部分
-    auto tAsA = local_partition(sA, tA, threadIdx.x);
-    auto tBsB = local_partition(sB, tB, threadIdx.x);
-    copy(tAgA, tAsA);
-    copy(tBgB, tBsB);
+    copy(tAgA(_, _, k_tile), tAsA);
+    copy(tBgB(_, _, k_tile), tBsB);
 
     cp_async_fence();
     cp_async_wait<0>();
     __syncthreads();
 
-    auto tCsA = local_partition(sA, tC, threadIdx.x, Step<_1, X>{});
-    auto tCsB = local_partition(sB, tC, threadIdx.x, Step<X, _1>{});
     gemm(tCsA, tCsB, tCrC);
 
     __syncthreads();
@@ -73,10 +67,9 @@ void gemm_cpu_reference(const T *A, const T *B, T *C, int M, int N, int K)
       float sum = 0.0f;
       for (int k = 0; k < K; ++k)
       {
-        // A 是 (M, K)，B 是 (N, K) 转置布局
         sum += float(A[m * K + k]) * float(B[n * K + k]);
       }
-      C[m * N + n] = T(sum);
+      C[m + n * M] = T(sum);
     }
   }
 }
@@ -163,7 +156,7 @@ int main()
 
   constexpr int kTileM = 128;
   constexpr int kTileN = 128;
-  constexpr int kTileK = 32;
+  constexpr int kTileK = 8;
 
   // each thread block handle with (kTileM, kTileN) output
   dim3 grid(n / kTileN, m / kTileM);
