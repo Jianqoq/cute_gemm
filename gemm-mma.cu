@@ -51,9 +51,21 @@ __global__ void gemm_mma(T *Cptr, const T *Aptr, const T *Bptr, int m, int n, in
     Tensor tBsB = thr_copy_b.partition_D(sB); // (num_el_per_cpy, num_copy_m, num_copy_k)
 
     if (thread0() && blockIdx.x == 0 && blockIdx.y == 0) {
-        print("tAgA = ");print(shape(tAgA));print("\n");
+        print("tAgA = ");print(shape(tAgA(_, _, _, 0)));print("\n");
         print("tAsA = ");print(shape(tAsA));print("\n");
+        print("tBgB = ");print(shape(tBgB(_, _, _, 0)));print("\n");
+        print("tBsB = ");print(shape(tBsB));print("\n");
+        print("tCrC = ");print(shape(tCrC));print("\n");
     }
+    CUTE_STATIC_ASSERT_V(size<1>(tAgA) == size<1>(tAsA));                // CPY_M
+    CUTE_STATIC_ASSERT_V(size<2>(tAgA) == size<2>(tAsA));                // CPY_K
+    CUTE_STATIC_ASSERT_V(size<1>(tBgB) == size<1>(tBsB));                // CPY_N
+    CUTE_STATIC_ASSERT_V(size<2>(tBgB) == size<2>(tBsB));                // CPY_K
+
+    CUTE_STATIC_ASSERT_V(  shape(tCrC) ==   shape(tCgC));                // (MMA,MMA_M,MMA_N)
+    CUTE_STATIC_ASSERT_V(size<1>(tCgC) == size<1>(tCsA));                // MMA_M
+    CUTE_STATIC_ASSERT_V(size<2>(tCgC) == size<1>(tCsB));                // MMA_N
+    CUTE_STATIC_ASSERT_V(size<2>(tCsA) == size<2>(tCsB));                // MMA_K
     for (int k_tile = 0; k_tile < size<2>(gA); ++k_tile)
     {
         copy(copy_a, tAgA(_, _, _, k_tile), tAsA); // (ACPY,ACPY_M,ACPY_K) -> (ACPY,ACPY_M,ACPY_K)
