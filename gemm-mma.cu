@@ -191,9 +191,9 @@ int main()
     using copy_atom_a = Copy_Atom<UniversalCopy<T>, T>;
     using copy_atom_b = Copy_Atom<UniversalCopy<T>, T>;
 
-    // 256线程拷贝 32x8 的输入
-    auto copy_a = make_tiled_copy(copy_atom_a{}, Layout<Shape<_32, _8>>{}, Layout<Shape< _5,_1>>{}); // copy = (32 * 8, 8)
-    auto copy_b = make_tiled_copy(copy_atom_b{}, Layout<Shape<_32, _8>>{}, Layout<Shape< _5,_1>>{}); // copy = (32 * 8, 8)
+    // 256线程拷贝 32x8 的输入, M方向大小必须小于tileM， N方向大小必须小于tileN， K方向大小必须小于tileK
+    auto copy_a = make_tiled_copy(copy_atom_a{}, Layout<Shape<_32, _8>>{}, Layout<Shape< _4,_1>>{}); // copy = (32 * 8, 8)
+    auto copy_b = make_tiled_copy(copy_atom_b{}, Layout<Shape<_32, _8>>{}, Layout<Shape< _4,_1>>{}); // copy = (32 * 8, 8)
     // print_latex(copy_b);
 
     using mma_atom = UniversalFMA<T, T, T>;
