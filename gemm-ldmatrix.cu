@@ -54,6 +54,8 @@ __global__ void gemm_mma(T *Cptr, const T *Aptr, const T *Bptr, int m, int n, in
     {
         copy(copy_a, tAgA(_, _, _, k_tile), tAsA); // (ACPY,ACPY_M,ACPY_K) -> (ACPY,ACPY_M,ACPY_K)
         copy(copy_b, tBgB(_, _, _, k_tile), tBsB);
+        cp_async_fence();
+        cp_async_wait<0>();
         __syncthreads();
 
         gemm(mma, tCsA, tCsB, tCrC);
@@ -124,7 +126,15 @@ void verify_result(const T *C_gpu, const T *C_cpu, int size, const char *name)
         printf("❌ Result FAILED!\n\n");
     }
 }
+void ldmatrixLayout()
+{
+    TiledMMA mmaC = make_tiled_mma(MMA_Atom<SM80_16x8x16_F16F16F16F16_TN>{},
+                                   Layout<Shape<_1, _1>>{});
+    Copy_Atom<SM75_U32x4_LDSM_N, cute::half_t> s2r_atom_A;
 
+    TiledCopy s2r_copy_a = make_tiled_copy_A(s2r_atom_A, mmaC);
+    print_latex(s2r_copy_a);
+}
 int main()
 {
     srand(1000);
@@ -162,7 +172,7 @@ int main()
 
     constexpr int kTileM = 128;
     constexpr int kTileN = 128;
-    constexpr int kTileK = 8;
+    constexpr int kTileK = 32;
     constexpr int block_size = 256;
 
     // each thread block handle with (kTileM, kTileN) output
@@ -172,24 +182,18 @@ int main()
     using SLayoutA = decltype(make_layout(make_shape(Int<kTileM>{}, Int<kTileK>{}), make_stride(Int<kTileK>{}, Int<1>{})));
     using SLayoutB = decltype(make_layout(make_shape(Int<kTileN>{}, Int<kTileK>{}), make_stride(Int<kTileK>{}, Int<1>{})));
 
-    using copy_atom_a = Copy_Atom<UniversalCopy<T>, T>;
-    using copy_atom_b = Copy_Atom<UniversalCopy<T>, T>;
+    auto mma = make_tiled_mma(MMA_Atom<SM80_16x8x16_F16F16F16F16_TN>{}, Layout<Shape<_1, _2>>{});
 
-    auto thread_layout = Layout<Shape<_32, _8>>{};
-    auto repeat_layout = Layout<Shape<_4, _1>>{};
+    auto thread_layout = Layout<Shape<_32, _4>>{};
+    auto repeat_layout = Layout<Shape<_1, _8>>{};
     static_assert(size(thread_layout) <= block_size, "thread_layout size must be less than or equal to block_size");
     static_assert(size<0>(repeat_layout) * size<0>(thread_layout) <= kTileM, "repeat_layout.0 * thread_layout.0 must be less than or equal to kTileM");
     static_assert(size<1>(repeat_layout) * size<1>(thread_layout) <= kTileN, "repeat_layout.1 * thread_layout.1 must be less than or equal to kTileN");
-    static_assert(size(thread_layout) == block_size, "thread_layout size must be equal to block_size to fully utilize all the available threads");
     // 256线程拷贝 32x8 的输入
-    auto copy_a = make_tiled_copy(copy_atom_a{}, thread_layout, repeat_layout); // copy = (32 * 8, 8)
-    auto copy_b = make_tiled_copy(copy_atom_b{}, thread_layout, repeat_layout); // copy = (32 * 8, 8)
-    // print_latex(copy_b);
+    auto copy_a = make_tiled_copy(Copy_Atom<Copy_Traits<SM80_CP_ASYNC_CACHEGLOBAL<uint128_t>>, T>{}, thread_layout, repeat_layout);
+    auto copy_b = make_tiled_copy(Copy_Atom<Copy_Traits<SM80_CP_ASYNC_CACHEGLOBAL<uint128_t>>, T>{}, thread_layout, repeat_layout); // copy = (32 * 8, 8)
 
-    using mma_atom = UniversalFMA<T, T, T>;
-
-    // 256线程计算 16x16 的输出
-    auto mma = make_tiled_mma(mma_atom{}, Layout<Shape<_16, _16, _1>>{});
+    // print(copy_b);
 
     int count = 1;
     cudaEventRecord(start);
@@ -221,6 +225,8 @@ int main()
     cudaFree(Aptr);
     cudaFree(Bptr);
     cudaFree(Cptr);
+
+    // ldmatrixLayout();
 
     return 0;
 }
