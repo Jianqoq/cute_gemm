@@ -123,17 +123,18 @@ int main()
     using SLayoutA = decltype(make_layout(make_shape(Int<kTileM>{}, Int<kTileK>{}), make_stride(Int<kTileK>{}, Int<1>{})));
     using SLayoutB = decltype(make_layout(make_shape(Int<kTileN>{}, Int<kTileK>{}), make_stride(Int<kTileK>{}, Int<1>{})));
 
-    using copy_atom_a = Copy_Atom<UniversalCopy<T>, T>;
-    using copy_atom_b = Copy_Atom<UniversalCopy<T>, T>;
-
+    auto copy_atom_a = Copy_Atom<UniversalCopy<T>, T>{};
+    auto copy_atom_b = Copy_Atom<UniversalCopy<T>, T>{};
     auto thread_layout = Layout<Shape<_2, _3>>{};
     auto repeat_layout = Layout<Shape<_2, _1>>{};
+    static_assert(size<1>(repeat_layout) % (size(decltype(copy_atom_a)::SrcLayout{}) / (sizeof(T) * 8)) == 0, "each thread must copy a number of copy_atom");
+    static_assert(size<1>(repeat_layout) % (size(decltype(copy_atom_b)::SrcLayout{}) / (sizeof(T) * 8)) == 0, "each thread must copy a number of copy_atom");
     static_assert(size(thread_layout) <= block_size, "thread_layout size must be less than or equal to block_size");
     static_assert(size<0>(repeat_layout) * size<0>(thread_layout) <= kTileM, "repeat_layout.0 * thread_layout.0 must be less than or equal to kTileM");
     static_assert(size<1>(repeat_layout) * size<1>(thread_layout) <= kTileN, "repeat_layout.1 * thread_layout.1 must be less than or equal to kTileN");
     // 256线程拷贝 32x8 的输入
-    auto copy_a = make_tiled_copy(copy_atom_a{}, thread_layout, repeat_layout); // copy = (32 * 8, 8)
-    auto copy_b = make_tiled_copy(copy_atom_b{}, thread_layout, repeat_layout); // copy = (32 * 8, 8)
+    auto copy_a = make_tiled_copy(copy_atom_a, thread_layout, repeat_layout); // copy = (32 * 8, 8)
+    auto copy_b = make_tiled_copy(copy_atom_b, thread_layout, repeat_layout); // copy = (32 * 8, 8)
     // print_latex(copy_a);
 
     int count = 1;
