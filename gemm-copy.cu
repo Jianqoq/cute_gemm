@@ -91,9 +91,9 @@ int main()
     T *Bptr;
     T *Cptr_host_cpu;
     T *Cptr_host_gpu;
-    int m = 32;
-    int n = 40;
-    int k = 12;
+    int m = 128 * 8;
+    int n = 128 * 8;
+    int k = 32 * 2;
 
     cudaMalloc(&Cptr, sizeof(T) * m * n);
     cudaMalloc(&Aptr, sizeof(T) * m * k);
@@ -111,13 +111,13 @@ int main()
     cudaMemcpy(Aptr, Aptr_host, sizeof(T) * m * k, cudaMemcpyHostToDevice);
     cudaMemcpy(Bptr, Bptr_host, sizeof(T) * n * k, cudaMemcpyHostToDevice);
 
-    constexpr int kTileM = 4;
-    constexpr int kTileN = 5;
-    constexpr int kTileK = 6;
+    constexpr int kTileM = 128;
+    constexpr int kTileN = 128;
+    constexpr int kTileK = 32;
 
     // each thread block handle with (kTileM, kTileN) output
     dim3 grid(n / kTileN, m / kTileM);
-    constexpr int block_size = 8;
+    constexpr int block_size = 256;
     dim3 block(block_size);
 
     using SLayoutA = decltype(make_layout(make_shape(Int<kTileM>{}, Int<kTileK>{}), make_stride(Int<kTileK>{}, Int<1>{})));
@@ -125,8 +125,8 @@ int main()
 
     auto copy_atom_a = Copy_Atom<UniversalCopy<T>, T>{};
     auto copy_atom_b = Copy_Atom<UniversalCopy<T>, T>{};
-    auto thread_layout = Layout<Shape<_2, _3>>{};
-    auto repeat_layout = Layout<Shape<_2, _1>>{};
+    auto thread_layout = Layout<Shape<_32, _4>>{};
+    auto repeat_layout = Layout<Shape<_1, _8>>{};
     static_assert(size<1>(repeat_layout) % (size(decltype(copy_atom_a)::SrcLayout{}) / (sizeof(T) * 8)) == 0, "each thread must copy a number of copy_atom");
     static_assert(size<1>(repeat_layout) % (size(decltype(copy_atom_b)::SrcLayout{}) / (sizeof(T) * 8)) == 0, "each thread must copy a number of copy_atom");
     static_assert(size(thread_layout) <= block_size, "thread_layout size must be less than or equal to block_size");

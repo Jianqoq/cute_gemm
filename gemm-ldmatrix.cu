@@ -49,8 +49,32 @@ __global__ void gemm_mma(T *Cptr, const T *Aptr, const T *Bptr, int m, int n, in
     Tensor tBgB = thr_copy_b.partition_S(gB); // (num_el_per_cpy, num_copy_m, num_copy_k, k)
     Tensor tAsA = thr_copy_a.partition_D(sA); // (num_el_per_cpy, num_copy_m, num_copy_k)
     Tensor tBsB = thr_copy_b.partition_D(sB); // (num_el_per_cpy, num_copy_m, num_copy_k)
+    copy(copy_a, tAgA(_, _, _, 0), tAsA);
+    cp_async_fence();
+    cp_async_wait<0>();
+    __syncthreads();
+    if (thread0() && blockIdx.x == 0 && blockIdx.y == 0)
+    {
+        // print("tAgA = ");
+        // print(shape(tAgA));
+        // print("\n");
+        print("sA = ");
+        print(shape(sA));
+        print("\n");
+        print("tAsA = ");
+        print(shape(tAsA));
+        print("\n");
+        print(size<3>(tAgA));
+        print("\n");
+        // print("tAgA = ");
+        // print_tensor(tAgA);
+        // print("\n");
+        // print("sA = ");
+        // print_tensor(sA);
+        // print("\n");
+    }
 
-    for (int k_tile = 0; k_tile < size<2>(gA); ++k_tile)
+    for (int k_tile = 0; k_tile < size<3>(tAgA); ++k_tile)
     {
         copy(copy_a, tAgA(_, _, _, k_tile), tAsA); // (ACPY,ACPY_M,ACPY_K) -> (ACPY,ACPY_M,ACPY_K)
         copy(copy_b, tBgB(_, _, _, k_tile), tBsB);
@@ -150,9 +174,9 @@ int main()
     T *Bptr;
     T *Cptr_host_cpu;
     T *Cptr_host_gpu;
-    int m = 128 * 4;
-    int n = 128 * 4;
-    int k = 128 * 4;
+    int m = 128 * 8;
+    int n = 128 * 8;
+    int k = 32 * 2;
 
     cudaMalloc(&Cptr, sizeof(T) * m * n);
     cudaMalloc(&Aptr, sizeof(T) * m * k);
@@ -193,11 +217,11 @@ int main()
     static_assert(size<1>(repeat_layout) * size<1>(thread_layout) <= kTileN, "repeat_layout.1 * thread_layout.1 must be less than or equal to kTileN");
     // 256线程拷贝 32x8 的输入
     auto copy_a = make_tiled_copy(copy_atom, thread_layout, repeat_layout);
-    auto copy_b = make_tiled_copy(copy_atom, thread_layout, repeat_layout); // copy = (32 * 8, 8)
+    auto copy_b = make_tiled_copy(copy_atom, thread_layout, repeat_layout);
 
-    // print(copy_b);
+    // print_latex(copy_b);
 
-    int count = 1;
+    int count = 10;
     cudaEventRecord(start);
     for (int i = 0; i < count; ++i)
     {

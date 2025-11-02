@@ -140,9 +140,9 @@ int main()
     T *Bptr;
     T *Cptr_host_cpu;
     T *Cptr_host_gpu;
-    int m = 128 * 4;
-    int n = 128 * 4;
-    int k = 128 * 4;
+    int m = 128 * 8;
+    int n = 128 * 8;
+    int k = 32 * 2;
 
     cudaMalloc(&Cptr, sizeof(T) * m * n);
     cudaMalloc(&Aptr, sizeof(T) * m * k);
@@ -162,7 +162,7 @@ int main()
 
     constexpr int kTileM = 128;
     constexpr int kTileN = 128;
-    constexpr int kTileK = 8;
+    constexpr int kTileK = 32;
     constexpr int block_size = 256;
 
     // each thread block handle with (kTileM, kTileN) output
